@@ -117,7 +117,8 @@ class ChatGPTProtocolLogin {
     const jar = new CookieJar();
     const email = account.email;
     const password = normalizeOpenAiPassword(account.password);
-    const loginAccount = { ...account, password };
+    const preferEmailOtp = Boolean(account.preferEmailOtp);
+    const loginAccount = { ...account, password, preferEmailOtp };
 
     try {
       // ====== Step 1: 获取 CSRF Token ======
@@ -163,7 +164,7 @@ class ChatGPTProtocolLogin {
         const identResult = await this._submitIdentifier(jar, loginState, email);
 
         // ====== 旧版 Step 5: 密码 or 验证码 ======
-        if (identResult.needsPassword && password) {
+        if (identResult.needsPassword && password && !preferEmailOtp) {
           onStatus('password', '提交密码...');
           callbackUrl = await this._submitPassword(jar, loginState, password);
         } else {
@@ -395,8 +396,9 @@ class ChatGPTProtocolLogin {
     let pageType = this._extractPageType(currentStep);
     let mode = this._extractEmailVerificationMode(currentStep);
     const needsPassword = pageType === 'login_password' || continueUrl.includes('/log-in/password');
+    const preferEmailOtp = Boolean(account.preferEmailOtp);
 
-    if (needsPassword && account.password) {
+    if (needsPassword && account.password && !preferEmailOtp) {
       onStatus('password', '提交密码...');
       loginState.sentinelToken = await this._getSentinelToken(loginState, 'username_password_login');
       currentStep = await this._submitModernPassword(jar, loginState, account.password);

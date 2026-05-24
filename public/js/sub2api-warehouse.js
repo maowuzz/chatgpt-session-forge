@@ -40,7 +40,7 @@ function loadSub2apiWarehouseSettings() {
   if (settings.proxy) document.getElementById('sub2apiProxy').value = settings.proxy;
   if (settings.maxItems) document.getElementById('sub2apiMaxItems').value = settings.maxItems;
   if (settings.autoInterval) document.getElementById('sub2apiAutoInterval').value = settings.autoInterval;
-  document.getElementById('sub2apiAutoToggle').checked = Boolean(settings.autoEnabled);
+  document.getElementById('sub2apiAutoToggle').checked = false;
 }
 
 function saveSub2apiWarehouseSettings() {
@@ -50,7 +50,6 @@ function saveSub2apiWarehouseSettings() {
     groupNames: document.getElementById('sub2apiGroupNames')?.value.trim() || 'codex',
     proxy: document.getElementById('sub2apiProxy')?.value.trim() || '',
     maxItems: document.getElementById('sub2apiMaxItems')?.value || '20',
-    autoEnabled: Boolean(document.getElementById('sub2apiAutoToggle')?.checked),
     autoInterval: document.getElementById('sub2apiAutoInterval')?.value || '5',
   };
   localStorage.setItem(SUB2API_WAREHOUSE_SETTINGS_KEY, JSON.stringify(settings));
@@ -248,8 +247,10 @@ function updateSub2apiWarehouseStats(summary = {}) {
 function formatSub2apiWarehouseAction(action) {
   const labels = {
     uploaded: '已更新',
+    deleted_deactivated: '已删除',
     skipped: '已跳过',
     login_failed: '登录失败',
+    delete_failed: '删除失败',
     upload_failed: '更新失败',
     ready: '正常',
   };
@@ -267,7 +268,7 @@ function onSub2apiWarehouseEvent(data) {
     addWarehouseLog(`${result.email || result.name || 'sub2api 账号'} ${result.message || result.action}`, result.ok ? 'success' : 'warning');
   } else if (data.type === 'sub2api_warehouse_complete') {
     const s = data.summary || {};
-    addWarehouseLog(`sub2api 处理完成: 更新 ${s.uploaded || 0}，失败 ${s.failed || 0}，跳过 ${s.skipped || 0}`, s.failed ? 'warning' : 'success');
+    addWarehouseLog(`sub2api 处理完成: 更新 ${s.uploaded || 0}，删除 ${s.deleted || 0}，失败 ${s.failed || 0}，跳过 ${s.skipped || 0}`, s.failed ? 'warning' : 'success');
   }
 }
 
@@ -289,5 +290,4 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   document.getElementById('sub2apiPassword')?.addEventListener('change', restartSub2apiAutoWarehouseIfNeeded);
   setSub2apiConnectionState('idle', '未连接');
-  if (document.getElementById('sub2apiAutoToggle')?.checked) startSub2apiAutoWarehouse();
 });

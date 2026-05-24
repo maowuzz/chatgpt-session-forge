@@ -44,8 +44,19 @@ function normalizeLoginError(error) {
   const lower = message.toLowerCase();
   if (
     lower.includes('account_deactivated') ||
+    lower.includes('account deactivated') ||
+    lower.includes('account_disabled') ||
+    lower.includes('account disabled') ||
+    lower.includes('account_deleted') ||
+    lower.includes('account deleted') ||
     lower.includes('deleted or deactivated') ||
-    lower.includes('账号已停用')
+    lower.includes('user is deactivated') ||
+    lower.includes('user is deleted') ||
+    lower.includes('账号已停用') ||
+    lower.includes('账号被停用') ||
+    lower.includes('账号已删除') ||
+    lower.includes('账户已停用') ||
+    lower.includes('账户已删除')
   ) {
     return { message: '账号已停用', type: 'account_deactivated' };
   }
@@ -197,15 +208,20 @@ function findLocalAccountByEmail(accounts, email) {
     || null;
 }
 
-function buildOtpLoginAccount(localAccount, loginEmail) {
+function buildWarehouseLoginAccount(localAccount, loginEmail) {
   const normalizedLoginEmail = upload.normalizeString(loginEmail || localAccount.email).toLowerCase();
-  const normalizedMailEmail = upload.normalizeString(localAccount.email).toLowerCase();
+  const normalizedMailEmail = upload.normalizeString(localAccount.mailEmail || localAccount.email).toLowerCase();
+  const isAliasLogin = Boolean(
+    normalizedLoginEmail &&
+    normalizedMailEmail &&
+    normalizedLoginEmail !== normalizedMailEmail
+  );
   return {
     ...localAccount,
     email: normalizedLoginEmail,
-    password: '',
     mailEmail: normalizedMailEmail,
-    requireTargetEmailMatch: Boolean(normalizedLoginEmail && normalizedMailEmail && normalizedLoginEmail !== normalizedMailEmail),
+    requireTargetEmailMatch: isAliasLogin,
+    preferEmailOtp: isAliasLogin,
   };
 }
 
@@ -277,13 +293,18 @@ function matchesMail2925Alias(base, candidate) {
 }
 
 function extractAccountsFromPayload(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.accounts)) return payload.accounts;
-  if (Array.isArray(payload?.items)) return payload.items;
-  if (Array.isArray(payload?.data)) return payload.data;
-  if (Array.isArray(payload?.data?.accounts)) return payload.data.accounts;
-  if (Array.isArray(payload?.data?.items)) return payload.data.items;
-  return [];
+  const candidates = [
+    payload,
+    payload?.accounts,
+    payload?.items,
+    payload?.data,
+    payload?.data?.accounts,
+    payload?.data?.items,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return { matched: true, accounts: candidate };
+  }
+  return { matched: false, accounts: [] };
 }
 
 class Sub2ApiManagementClient {
@@ -310,18 +331,38 @@ class Sub2ApiManagementClient {
 
   async listAccounts() {
     const errors = [];
+    let emptyMatch = null;
     for (const endpoint of ACCOUNT_LIST_ENDPOINTS) {
       try {
         const payload = await this.request(endpoint, { method: 'GET' });
-        const accounts = extractAccountsFromPayload(payload);
-        if (accounts.length || payload !== null) {
+        const { matched, accounts } = extractAccountsFromPayload(payload);
+        if (matched && accounts.length > 0) {
           return { endpoint, accounts };
+        }
+        if (matched && !emptyMatch) {
+          emptyMatch = { endpoint, accounts };
+        }
+        if (!matched) {
+          errors.push(`${endpoint}: 响应中没有可识别的账号数组`);
         }
       } catch (err) {
         errors.push(`${endpoint}: ${err.message}`);
       }
     }
+    if (emptyMatch) return emptyMatch;
     throw new Error(`无法读取 sub2api 账号列表：${errors.join('；')}`);
+  }
+
+  async deleteAccount(account) {
+    const id = account?.id;
+    if (id === undefined || id === null || id === '') {
+      throw new Error('缺少 sub2api 账号 ID，无法删除旧账号');
+    }
+    const encodedId = encodeURIComponent(String(id));
+    return this.request(`/api/v1/admin/accounts/${encodedId}`, {
+      method: 'DELETE',
+      timeoutMs: this.options.deleteTimeoutMs || this.options.timeoutMs || 30000,
+    });
   }
 
   async importSession(account, options = {}) {
@@ -395,6 +436,7 @@ async function repair401Accounts(options = {}, onEvent = () => {}) {
     candidates: candidates.length,
     processed: 0,
     uploaded: 0,
+    deleted: 0,
     skipped: 0,
     failed: 0,
   };
@@ -407,6 +449,7 @@ async function repair401Accounts(options = {}, onEvent = () => {}) {
     results.push(result);
     summary.processed++;
     if (result.action === 'uploaded') summary.uploaded++;
+    else if (result.action === 'deleted_deactivated') summary.deleted++;
     else if (result.action === 'skipped') summary.skipped++;
     else summary.failed++;
     onEvent({ type: 'sub2api_warehouse_item', result: sanitizeResultForEvent(result), summary });
@@ -455,7 +498,7 @@ async function repairOne401Account(client, remoteAccount, onEvent) {
   });
 
   let session;
-  const loginAccount = buildOtpLoginAccount(localAccount, email);
+  const loginAccount = buildWarehouseLoginAccount(localAccount, email);
   try {
     updateAccount(localAccount.id, { status: 'logging_in', error: null, errorType: null });
     session = await chatgptService.login(loginAccount, fetchVerificationCode, (status, detail) => {
@@ -468,6 +511,30 @@ async function repairOne401Account(client, remoteAccount, onEvent) {
       error: loginError.message,
       errorType: loginError.type,
     });
+    if (loginError.type === 'account_deactivated') {
+      try {
+        await client.deleteAccount(remoteAccount);
+        return {
+          id: remoteAccount.id,
+          name,
+          email,
+          action: 'deleted_deactivated',
+          ok: true,
+          message: '重新登录失败：账号已停用，已删除 sub2api 旧账号',
+          status_message: statusMessage,
+        };
+      } catch (deleteErr) {
+        return {
+          id: remoteAccount.id,
+          name,
+          email,
+          action: 'delete_failed',
+          ok: false,
+          message: `账号已停用，但删除 sub2api 旧账号失败：${deleteErr.message}`,
+          status_message: statusMessage,
+        };
+      }
+    }
     return {
       id: remoteAccount.id,
       name,
