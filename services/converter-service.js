@@ -1,6 +1,6 @@
 /**
  * Session 格式转换服务
- * 将 ChatGPT session JSON 转换为 CPA / sub2api / Cockpit 格式
+ * 将 ChatGPT session JSON 转换为 CPA / sub2api 格式
  * 移植自 GPTSession2CPAandSub2API 项目
  */
 
@@ -69,7 +69,6 @@ function extractSessionInfo(session) {
     email: '',
     accessToken: '',
     sessionToken: '',
-    refreshToken: '',
     idToken: '',
     accountId: '',
     userId: '',
@@ -77,25 +76,19 @@ function extractSessionInfo(session) {
     isPlus: false,
     expiresAt: '',
     expiresAtUnix: 0,
-    accountNote: '',
   };
 
   if (!session) return info;
 
   // 直接字段
-  info.accessToken = session.accessToken || session.access_token || session.tokens?.access_token || session.token?.access_token || session.credentials?.access_token || '';
-  info.sessionToken = session.sessionToken || session.session_token || session.tokens?.session_token || session.token?.session_token || session.credentials?.session_token || '';
-  info.refreshToken = session.refreshToken || session.refresh_token || session.tokens?.refresh_token || session.token?.refresh_token || session.credentials?.refresh_token || '';
-  info.idToken = session.idToken || session.id_token || session.tokens?.id_token || session.token?.id_token || session.credentials?.id_token || '';
-  info.email = session.user?.email || session.email || session.profile?.email || session.meta?.email || '';
-  info.accountId = session.account_id || session.chatgpt_account_id || session.tokens?.account_id || session.tokens?.chatgpt_account_id || session.meta?.chatgpt_account_id || '';
-  info.userId = session.user?.id || session.user_id || session.chatgpt_user_id || session.tokens?.user_id || session.tokens?.chatgpt_user_id || '';
-  info.planType = session.plan_type || session.chatgpt_plan_type || session.providerSpecificData?.chatgptPlanType || session.providerSpecificData?.chatgpt_plan_type || session.credentials?.plan_type || '';
-  info.accountNote = session.account_note || session.accountInfo || session.account_info || session.note || session.notes || session.remark || '';
+  info.accessToken = session.accessToken || session.access_token || '';
+  info.sessionToken = session.sessionToken || session.session_token || '';
+  info.idToken = session.idToken || session.id_token || '';
+  info.email = session.user?.email || session.email || '';
 
   if (session.account) {
-    if (!info.accountId) info.accountId = session.account.id || session.account.account_id || '';
-    if (!info.planType) info.planType = session.account.planType || session.account.plan_type || '';
+    info.accountId = session.account.id || session.account.account_id || '';
+    info.planType = session.account.planType || session.account.plan_type || '';
   }
 
   // 账号信息
@@ -117,7 +110,7 @@ function extractSessionInfo(session) {
     const profile = claims['https://api.openai.com/profile'] || {};
 
     if (!info.email) info.email = claims.email || profile.email || auth.email || '';
-    if (!info.accountId) info.accountId = auth.chatgpt_account_id || auth.account_id || claims.account_id || '';
+    if (!info.accountId) info.accountId = auth.chatgpt_account_id || auth.account_id || '';
     if (!info.userId) info.userId = auth.chatgpt_user_id || auth.user_id || claims.sub || '';
     if (!info.planType) info.planType = auth.chatgpt_plan_type || auth.plan_type || '';
 
@@ -132,20 +125,6 @@ function extractSessionInfo(session) {
   info.isPlus = /plus|team|enterprise/i.test(info.planType);
 
   return info;
-}
-
-function getCodexIdToken(info) {
-  let idToken = normalizeSyntheticCodexIdToken(info.idToken);
-  if (!idToken && info.accessToken) {
-    idToken = buildSyntheticCodexIdToken(
-      info.email,
-      info.accountId,
-      info.planType,
-      info.userId,
-      info.expiresAt || info.expiresAtUnix
-    );
-  }
-  return idToken;
 }
 
 function unixToIsoSeconds(unix) {
@@ -228,7 +207,17 @@ function parseSessionInput(text) {
 function toCPA(sessions) {
   return sessions.map(info => {
     // 构建 id_token（如缺失则生成占位 JWT claims）
-    const idToken = getCodexIdToken(info);
+    let idToken = normalizeSyntheticCodexIdToken(info.idToken);
+    if (!idToken && info.accessToken) {
+      idToken = buildSyntheticCodexIdToken(
+        info.email,
+        info.accountId,
+        info.planType,
+        info.userId,
+        info.expiresAt || info.expiresAtUnix
+      );
+    }
+
     const expired = info.expiresAt || unixToIsoSeconds(info.expiresAtUnix);
 
     return {
@@ -246,30 +235,6 @@ function toCPA(sessions) {
       expired,
       disabled: false,
       id_token_synthetic: isSyntheticCodexIdToken(idToken) || (!info.idToken && Boolean(idToken)),
-    };
-  });
-}
-
-/**
- * 转换为 Cockpit Tools Codex 导入格式
- * 参考 GPTSession2CPAandSub2API 的扁平 token JSON。
- */
-function toCockpit(sessions) {
-  const exportedAt = new Date().toISOString();
-  return sessions.map(info => {
-    const idToken = getCodexIdToken(info);
-    const expired = info.expiresAt || unixToIsoSeconds(info.expiresAtUnix);
-
-    return {
-      type: 'codex',
-      id_token: idToken,
-      access_token: info.accessToken,
-      refresh_token: info.refreshToken || '',
-      account_id: info.accountId,
-      last_refresh: exportedAt,
-      email: info.email,
-      expired,
-      account_note: info.accountNote || '',
     };
   });
 }
@@ -323,6 +288,5 @@ module.exports = {
   extractSessionInfo,
   parseSessionInput,
   toCPA,
-  toCockpit,
   toSub2API,
 };

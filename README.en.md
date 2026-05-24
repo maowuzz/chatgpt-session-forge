@@ -2,7 +2,7 @@
 
 A local web app for managing Outlook-based ChatGPT login workflows and exporting usable session credentials.
 
-It can import Outlook accounts, fetch OpenAI verification codes through IMAP or Microsoft Graph, run batch ChatGPT login jobs with configurable concurrency, and export successful sessions as CPA, sub2api, or Cockpit-compatible JSON.
+It can import Outlook accounts, fetch OpenAI verification codes through IMAP or Microsoft Graph, run batch ChatGPT login jobs with configurable concurrency, and export successful sessions as CPA or sub2api-compatible JSON.
 
 ## Features
 
@@ -13,7 +13,6 @@ It can import Outlook accounts, fetch OpenAI verification codes through IMAP or 
 - Account status tracking, including deactivated account detection
 - CPA export as one JSON file per account
 - sub2api export in grouped JSON format
-- Cockpit export in the flat token JSON format recognized by Cockpit Tools Codex imports
 - Session converter for raw `https://chatgpt.com/api/auth/session` JSON
 - Optional outbound proxy support through environment variables or Windows proxy auto-detection
 
@@ -95,7 +94,6 @@ Use `direct` or `none` in `config.js` to disable proxy handling.
 6. After login succeeds, select successful accounts and export:
    - `CPA`: one JSON file per account
    - `sub2api`: grouped JSON with an `accounts` array
-   - `Cockpit`: one Cockpit Tools Codex JSON file per account
 
 ## CPA Export
 
@@ -136,26 +134,6 @@ sub2api export creates a grouped file:
 
 Each account includes OAuth credentials, account ID, user ID, plan type, expiry, and metadata.
 
-## Cockpit Export
-
-Cockpit export uses the flat token structure recognized by Cockpit Tools Codex imports. Single-account example:
-
-```json
-{
-  "type": "codex",
-  "id_token": "header.payload.",
-  "access_token": "real-access-token",
-  "refresh_token": "",
-  "account_id": "00000000-0000-4000-9000-000000000000",
-  "last_refresh": "2026-05-24T00:00:00.000Z",
-  "email": "user@example.com",
-  "expired": "2026-08-22T00:00:00.000Z",
-  "account_note": ""
-}
-```
-
-For multiple accounts, the app downloads one JSON file per account, or shows an object array on the conversion page.
-
 ## Data Storage
 
 Runtime account data is stored locally in:
@@ -180,7 +158,7 @@ This project handles highly sensitive data:
 - OAuth refresh tokens
 - ChatGPT access tokens
 - ChatGPT session tokens
-- exported CPA/sub2api/Cockpit credential files
+- exported CPA/sub2api credential files
 
 Do not commit runtime data, logs, exported JSON, exported ZIP files, or screenshots that contain tokens. The included `.gitignore` excludes the common sensitive paths, but review `git status` before pushing.
 

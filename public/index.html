@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=20260524-cockpit">
+  <link rel="stylesheet" href="/css/style.css?v=20260524-cpa-compatible">
 </head>
 <body>
   <!-- 动态背景 -->
@@ -201,7 +201,6 @@
               <select id="exportFormat" class="export-select">
                 <option value="cpa">CPA</option>
                 <option value="sub2api">sub2api</option>
-                <option value="cockpit">Cockpit</option>
               </select>
               <button class="btn btn-ghost btn-small" id="btnExportSessions" disabled>⇩ 导出选中</button>
             </div>
@@ -277,7 +276,6 @@
             <div class="format-selector">
               <button class="format-btn active" data-format="cpa">CPA</button>
               <button class="format-btn" data-format="sub2api">sub2api</button>
-              <button class="format-btn" data-format="cockpit">Cockpit</button>
             </div>
             <div class="converter-actions">
               <button class="btn btn-primary btn-small" id="btnConvert">🔄 转换</button>
@@ -350,10 +348,10 @@
   <!-- Toast 通知 -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="/js/app.js?v=20260524-cockpit"></script>
-  <script src="/js/accounts.js?v=20260524-cockpit"></script>
-  <script src="/js/mail-fetcher.js?v=20260524-cockpit"></script>
-  <script src="/js/chatgpt-login.js?v=20260524-cockpit"></script>
-  <script src="/js/session-converter.js?v=20260524-cockpit"></script>
+  <script src="/js/app.js?v=20260524-cpa-compatible"></script>
+  <script src="/js/accounts.js?v=20260524-cpa-compatible"></script>
+  <script src="/js/mail-fetcher.js?v=20260524-cpa-compatible"></script>
+  <script src="/js/chatgpt-login.js?v=20260524-cpa-compatible"></script>
+  <script src="/js/session-converter.js?v=20260524-cpa-compatible"></script>
 </body>
 </html>

@@ -338,9 +338,9 @@ async function exportSessions() {
     const data = await res.json();
 
     if (data.success) {
-      if (format === 'cpa' || format === 'cockpit') {
-        const download = downloadCredentialJsonFiles(data.data, `sessions-${format}`, format);
-        showToast(download.zipped ? `已下载 ${download.count} 个 ${format.toUpperCase()} JSON 文件` : `已下载 ${format.toUpperCase()} JSON 文件`, 'success');
+      if (format === 'cpa') {
+        const download = downloadCpaJsonFiles(data.data, 'sessions-cpa');
+        showToast(download.zipped ? `已下载 ${download.count} 个 CPA JSON 文件` : '已下载 CPA JSON 文件', 'success');
       } else {
         const json = JSON.stringify(data.data, null, 2);
         downloadTextFile(`sessions-${format}-${new Date().toISOString().slice(0, 10)}.json`, json);

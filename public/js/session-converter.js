@@ -51,26 +51,21 @@ function normalizeSyntheticCodexIdToken(token) {
 // ==================== Session 解析 ====================
 function extractSessionInfo(session) {
   const info = {
-    email: '', accessToken: '', sessionToken: '', refreshToken: '', idToken: '',
+    email: '', accessToken: '', sessionToken: '', idToken: '',
     accountId: '', userId: '', planType: '', isPlus: false,
-    expiresAt: '', expiresAtUnix: 0, accountNote: '',
+    expiresAt: '', expiresAtUnix: 0,
   };
 
   if (!session) return info;
 
-  info.accessToken = session.accessToken || session.access_token || session.tokens?.access_token || session.token?.access_token || session.credentials?.access_token || '';
-  info.sessionToken = session.sessionToken || session.session_token || session.tokens?.session_token || session.token?.session_token || session.credentials?.session_token || '';
-  info.refreshToken = session.refreshToken || session.refresh_token || session.tokens?.refresh_token || session.token?.refresh_token || session.credentials?.refresh_token || '';
-  info.idToken = session.idToken || session.id_token || session.tokens?.id_token || session.token?.id_token || session.credentials?.id_token || '';
-  info.email = session.user?.email || session.email || session.profile?.email || session.meta?.email || '';
-  info.accountId = session.account_id || session.chatgpt_account_id || session.tokens?.account_id || session.tokens?.chatgpt_account_id || session.meta?.chatgpt_account_id || '';
-  info.userId = session.user?.id || session.user_id || session.chatgpt_user_id || session.tokens?.user_id || session.tokens?.chatgpt_user_id || '';
-  info.planType = session.plan_type || session.chatgpt_plan_type || session.providerSpecificData?.chatgptPlanType || session.providerSpecificData?.chatgpt_plan_type || session.credentials?.plan_type || '';
-  info.accountNote = session.account_note || session.accountInfo || session.account_info || session.note || session.notes || session.remark || '';
+  info.accessToken = session.accessToken || session.access_token || '';
+  info.sessionToken = session.sessionToken || session.session_token || '';
+  info.idToken = session.idToken || session.id_token || '';
+  info.email = session.user?.email || session.email || '';
 
   if (session.account) {
-    if (!info.accountId) info.accountId = session.account.id || session.account.account_id || '';
-    if (!info.planType) info.planType = session.account.planType || session.account.plan_type || '';
+    info.accountId = session.account.id || session.account.account_id || '';
+    info.planType = session.account.planType || session.account.plan_type || '';
   }
 
   if (session.accounts) {
@@ -88,7 +83,7 @@ function extractSessionInfo(session) {
     const auth = claims['https://api.openai.com/auth'] || {};
     const profile = claims['https://api.openai.com/profile'] || {};
     if (!info.email) info.email = claims.email || profile.email || auth.email || '';
-    if (!info.accountId) info.accountId = auth.chatgpt_account_id || auth.account_id || claims.account_id || '';
+    if (!info.accountId) info.accountId = auth.chatgpt_account_id || auth.account_id || '';
     if (!info.userId) info.userId = auth.chatgpt_user_id || auth.user_id || claims.sub || '';
     if (!info.planType) info.planType = auth.chatgpt_plan_type || auth.plan_type || '';
     if (claims.exp) {
@@ -120,23 +115,19 @@ function parseSessionInput(text) {
 }
 
 // ==================== 转换函数 ====================
-function getCodexIdToken(info) {
-  let idToken = normalizeSyntheticCodexIdToken(info.idToken);
-  if (!idToken && info.accessToken) {
-    idToken = buildSyntheticCodexIdToken(
-      info.email,
-      info.accountId,
-      info.planType,
-      info.userId,
-      info.expiresAt || info.expiresAtUnix
-    );
-  }
-  return idToken;
-}
-
 function convertToCPA(sessions) {
   return sessions.map(info => {
-    const idToken = getCodexIdToken(info);
+    let idToken = normalizeSyntheticCodexIdToken(info.idToken);
+    if (!idToken && info.accessToken) {
+      idToken = buildSyntheticCodexIdToken(
+        info.email,
+        info.accountId,
+        info.planType,
+        info.userId,
+        info.expiresAt || info.expiresAtUnix
+      );
+    }
+
     const expired = info.expiresAt || unixToIsoSeconds(info.expiresAtUnix);
 
     return {
@@ -154,25 +145,6 @@ function convertToCPA(sessions) {
       expired,
       disabled: false,
       id_token_synthetic: isSyntheticCodexIdToken(idToken) || (!info.idToken && Boolean(idToken)),
-    };
-  });
-}
-
-function convertToCockpit(sessions) {
-  const exportedAt = new Date().toISOString();
-  return sessions.map(info => {
-    const idToken = getCodexIdToken(info);
-    const expired = info.expiresAt || unixToIsoSeconds(info.expiresAtUnix);
-    return {
-      type: 'codex',
-      id_token: idToken,
-      access_token: info.accessToken,
-      refresh_token: info.refreshToken || '',
-      account_id: info.accountId,
-      last_refresh: exportedAt,
-      email: info.email,
-      expired,
-      account_note: info.accountNote || '',
     };
   });
 }
@@ -297,8 +269,6 @@ function doConvert() {
   let result;
   if (_currentFormat === 'sub2api') {
     result = convertToSub2API(_parsedSessions);
-  } else if (_currentFormat === 'cockpit') {
-    result = convertToCockpit(_parsedSessions);
   } else {
     result = convertToCPA(_parsedSessions);
   }
@@ -309,19 +279,19 @@ function doConvert() {
 }
 
 function formatConvertOutput(result) {
-  if (!['cpa', 'cockpit'].includes(_currentFormat) || !Array.isArray(result)) return result;
-  if (result.length === 1) return result[0];
-  const label = _currentFormat === 'cpa' ? 'CPA' : 'Cockpit';
-  return {
-    note: `${label} 每个账号一个 JSON 文件，请点击下载输出获取 ZIP。`,
-    count: result.length,
-    files: result.map((item, index) => ({
-      index: index + 1,
-      email: item.email,
-      account_id: item.account_id,
-      filename: credentialJsonFilename(item, index, result.length, _currentFormat),
-    })),
-  };
+  if (_currentFormat !== 'cpa' || !Array.isArray(result)) return result;
+  return result.length === 1
+    ? result[0]
+    : {
+      note: 'CPA 每个账号一个 JSON 文件，请点击下载输出获取 ZIP。',
+      count: result.length,
+      files: result.map((item, index) => ({
+        index: index + 1,
+        email: item.email,
+        account_id: item.account_id,
+        filename: cpaJsonFilename(item, index, result.length),
+      })),
+    };
 }
 
 // ==================== 从登录结果加载 ====================
@@ -382,11 +352,11 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnDownloadOutput').addEventListener('click', () => {
     const output = document.getElementById('convertOutput').value;
     if (!output) { showToast('没有可下载的内容', 'warning'); return; }
-    if (_currentFormat === 'cpa' || _currentFormat === 'cockpit') {
-      if (_parsedSessions.length === 0) { showToast(`请先转换 ${_currentFormat.toUpperCase()} 数据`, 'warning'); return; }
-      const data = _currentFormat === 'cockpit' ? convertToCockpit(_parsedSessions) : convertToCPA(_parsedSessions);
-      const download = downloadCredentialJsonFiles(data, `sessions-${_currentFormat}`, _currentFormat);
-      showToast(download.zipped ? `已下载 ${download.count} 个 ${_currentFormat.toUpperCase()} JSON 文件` : `已下载 ${_currentFormat.toUpperCase()} JSON 文件`, 'success');
+    if (_currentFormat === 'cpa') {
+      if (_parsedSessions.length === 0) { showToast('请先转换 CPA 数据', 'warning'); return; }
+      const data = convertToCPA(_parsedSessions);
+      const download = downloadCpaJsonFiles(data, 'sessions-cpa');
+      showToast(download.zipped ? `已下载 ${download.count} 个 CPA JSON 文件` : '已下载 CPA JSON 文件', 'success');
       return;
     }
     const filename = `sessions-${_currentFormat}-${new Date().toISOString().slice(0, 10)}.json`;

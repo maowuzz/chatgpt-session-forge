@@ -1,6 +1,6 @@
 /**
  * Session 转换路由
- * 将 ChatGPT session 转换为 CPA / sub2api / Cockpit 格式
+ * 将 ChatGPT session 转换为 CPA / sub2api 格式
  */
 
 const router = require('express').Router();
@@ -66,33 +66,6 @@ router.post('/convert/sub2api', (req, res) => {
 });
 
 /**
- * POST /api/convert/cockpit - 转换为 Cockpit 格式
- */
-router.post('/convert/cockpit', (req, res) => {
-  try {
-    const { sessions } = req.body;
-    if (!sessions) {
-      return res.status(400).json({ success: false, error: '缺少 sessions 数据' });
-    }
-
-    const parsed = typeof sessions === 'string'
-      ? converter.parseSessionInput(sessions)
-      : sessions.map(s => converter.extractSessionInfo(s));
-
-    const cockpitResult = converter.toCockpit(parsed);
-
-    res.json({
-      success: true,
-      format: 'cockpit',
-      data: cockpitResult.length === 1 ? cockpitResult[0] : cockpitResult,
-      count: cockpitResult.length,
-    });
-  } catch (err) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-/**
  * POST /api/convert/from-accounts - 从已登录成功的账号中提取并转换
  */
 router.post('/convert/from-accounts', (req, res) => {
@@ -116,8 +89,6 @@ router.post('/convert/from-accounts', (req, res) => {
     let result;
     if (format === 'sub2api') {
       result = converter.toSub2API(parsed);
-    } else if (format === 'cockpit') {
-      result = converter.toCockpit(parsed);
     } else {
       result = converter.toCPA(parsed);
     }
