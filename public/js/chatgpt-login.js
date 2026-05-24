@@ -77,10 +77,14 @@ function updateLoginStats() {
 
   // 更新按钮状态
   const hasSelected = document.querySelectorAll('.login-check:checked').length > 0;
+  const selectedSuccess = Array.from(document.querySelectorAll('.login-check:checked'))
+    .some(cb => _loginAccounts.find(a => a.id === cb.dataset.id)?.status === 'success');
   document.getElementById('btnLoginSelected').disabled = !hasSelected;
   document.getElementById('btnDeleteLoginSelected').disabled = !hasSelected;
   document.getElementById('btnRetryFailed').disabled = failed === 0;
   document.getElementById('btnExportSessions').disabled = success === 0;
+  const uploadBtn = document.getElementById('btnOpenSessionUpload');
+  if (uploadBtn) uploadBtn.disabled = !selectedSuccess;
 
   const selectSuccessBtn = document.getElementById('btnSelectSuccess');
   if (selectSuccessBtn) {

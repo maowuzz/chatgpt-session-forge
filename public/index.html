@@ -209,6 +209,7 @@
               </select>
               <button class="btn btn-ghost btn-small" id="btnExportSessions" disabled>⇩ 导出选中</button>
             </div>
+            <button class="btn btn-accent btn-small" id="btnOpenSessionUpload" disabled>⇧ 上传选中</button>
             <button class="btn btn-danger-ghost btn-small" id="btnDeleteLoginSelected" disabled>删除选中</button>
           </div>
         </div>
@@ -297,6 +298,74 @@
     <!-- ==================== Tab 4: CPA 仓管 ==================== -->
     <div class="tab-content" id="tab-warehouse">
       <section class="warehouse-section">
+        <div class="warehouse-panel glass-panel sub2api-warehouse-panel">
+          <div class="warehouse-header">
+            <div>
+              <h3>sub2api 401 自动修复</h3>
+              <p class="text-muted">扫描 sub2api OpenAI 账号，401 / unauthorized 会尝试用本地同邮箱账号重登，并覆盖导入到目标分组。</p>
+            </div>
+            <div class="warehouse-actions">
+              <div class="warehouse-status-pill idle" id="sub2apiConnectionStatus">
+                <span class="warehouse-status-dot"></span>
+                <span id="sub2apiConnectionText">未连接</span>
+              </div>
+              <button class="btn btn-ghost btn-small" id="btnSub2apiScan401">扫描 401</button>
+              <button class="btn btn-primary btn-small" id="btnSub2apiRepair401">修复 401</button>
+            </div>
+          </div>
+          <div class="warehouse-config">
+            <div class="input-group">
+              <input type="text" id="sub2apiBaseUrl" class="input warehouse-input" placeholder="sub2api 地址，例如 http://localhost:1455" />
+            </div>
+            <div class="input-group">
+              <input type="email" id="sub2apiEmail" class="input warehouse-input" placeholder="登录邮箱" autocomplete="off" />
+            </div>
+            <div class="input-group">
+              <input type="password" id="sub2apiPassword" class="input warehouse-input" placeholder="登录密码" autocomplete="off" />
+            </div>
+            <div class="input-group">
+              <input type="text" id="sub2apiGroupNames" class="input warehouse-input" value="codex" placeholder="分组名" />
+            </div>
+            <div class="input-group">
+              <input type="text" id="sub2apiProxy" class="input warehouse-input" placeholder="代理名 / ID，可空" />
+            </div>
+            <div class="input-group warehouse-limit-group">
+              <span class="warehouse-limit-label">处理上限</span>
+              <input type="number" id="sub2apiMaxItems" class="input warehouse-input warehouse-limit-input" min="1" max="50" value="20" />
+            </div>
+            <label class="warehouse-auto-toggle">
+              <input type="checkbox" id="sub2apiAutoToggle" />
+              <span class="warehouse-toggle-track"><span class="warehouse-toggle-thumb"></span></span>
+              <span>自动修复</span>
+            </label>
+            <div class="input-group warehouse-interval-group">
+              <span class="warehouse-interval-label">扫描间隔</span>
+              <input type="number" id="sub2apiAutoInterval" class="input warehouse-input warehouse-interval-input" min="1" max="1440" value="5" />
+            </div>
+          </div>
+          <div class="warehouse-stats" id="sub2apiWarehouseStats">
+            <div class="stat-card"><div class="stat-value" id="sub2apiStatTotal">0</div><div class="stat-label">OpenAI 账号</div></div>
+            <div class="stat-card"><div class="stat-value" id="sub2apiStat401">0</div><div class="stat-label">401 待处理</div></div>
+            <div class="stat-card"><div class="stat-value" id="sub2apiStatUploaded">0</div><div class="stat-label">已更新</div></div>
+            <div class="stat-card"><div class="stat-value" id="sub2apiStatFailed">0</div><div class="stat-label">失败</div></div>
+          </div>
+          <div class="warehouse-table-wrapper sub2api-table-wrapper">
+            <table class="warehouse-table">
+              <thead>
+                <tr>
+                  <th>账号</th>
+                  <th>邮箱</th>
+                  <th>状态</th>
+                  <th>处理结果</th>
+                </tr>
+              </thead>
+              <tbody id="sub2apiWarehouseTableBody">
+                <tr><td colspan="4"><div class="empty-state" style="padding:32px 20px"><p>先扫描 sub2api 401 账号</p></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="warehouse-panel glass-panel">
           <div class="warehouse-header">
             <div>
@@ -518,6 +587,77 @@
     </div>
   </div>
 
+  <!-- Session 上传弹窗 -->
+  <div class="modal-overlay" id="sessionUploadModal">
+    <div class="modal session-upload-modal glass-panel">
+      <div class="modal-header">
+        <h3>上传登录 Session</h3>
+        <button class="btn-close" id="btnCloseSessionUpload">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="upload-target-tabs" id="sessionUploadTarget">
+          <label><input type="radio" name="sessionUploadTarget" value="sub2api" checked><span>sub2api</span></label>
+          <label><input type="radio" name="sessionUploadTarget" value="cpa"><span>CPA</span></label>
+        </div>
+
+        <section class="upload-config-panel" id="sub2apiUploadPanel">
+          <div class="config-grid">
+            <label class="config-field">
+              <span>sub2api 地址</span>
+              <input type="text" id="uploadSub2apiBaseUrl" class="input config-input" placeholder="http://localhost:1455" autocomplete="off" />
+            </label>
+            <label class="config-field">
+              <span>登录邮箱</span>
+              <input type="email" id="uploadSub2apiEmail" class="input config-input" placeholder="admin@example.com" autocomplete="off" />
+            </label>
+            <label class="config-field secret-field">
+              <span>登录密码</span>
+              <input type="password" id="uploadSub2apiPassword" class="input config-input secret-input" autocomplete="off" />
+              <button type="button" class="secret-toggle" data-target="uploadSub2apiPassword" title="显示/隐藏">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </label>
+            <label class="config-field">
+              <span>分组名</span>
+              <input type="text" id="uploadSub2apiGroupNames" class="input config-input" value="codex" placeholder="codex" autocomplete="off" />
+            </label>
+            <label class="config-field">
+              <span>代理名 / ID</span>
+              <input type="text" id="uploadSub2apiProxy" class="input config-input" placeholder="留空不使用代理" autocomplete="off" />
+            </label>
+            <label class="config-field">
+              <span>优先级</span>
+              <input type="number" id="uploadSub2apiPriority" class="input config-input" min="1" value="1" />
+            </label>
+          </div>
+        </section>
+
+        <section class="upload-config-panel" id="cpaUploadPanel" hidden>
+          <div class="config-grid">
+            <label class="config-field">
+              <span>CPA 地址</span>
+              <input type="text" id="uploadCpaBaseUrl" class="input config-input" value="http://localhost:8317" placeholder="http://localhost:8317" autocomplete="off" />
+            </label>
+            <label class="config-field secret-field">
+              <span>管理密钥</span>
+              <input type="password" id="uploadCpaManagementKey" class="input config-input secret-input" autocomplete="off" />
+              <button type="button" class="secret-toggle" data-target="uploadCpaManagementKey" title="显示/隐藏">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </label>
+          </div>
+        </section>
+
+        <div class="upload-result-panel" id="sessionUploadResult" hidden></div>
+      </div>
+      <div class="modal-footer">
+        <span class="upload-count" id="sessionUploadCount">已选中 0 个账号</span>
+        <button class="btn btn-ghost" id="btnCancelSessionUpload">取消</button>
+        <button class="btn btn-primary" id="btnConfirmSessionUpload">开始上传</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 邮件详情弹窗 -->
   <div class="modal-overlay" id="emailDetailModal">
     <div class="modal modal-large glass-panel">
@@ -540,6 +680,8 @@
   <script src="/js/mail-fetcher.js?v=20260524-cpa-compatible"></script>
   <script src="/js/chatgpt-login.js?v=20260524-cpa-compatible"></script>
   <script src="/js/session-converter.js?v=20260524-cpa-compatible"></script>
+  <script src="/js/session-uploader.js?v=20260524-upload"></script>
+  <script src="/js/sub2api-warehouse.js?v=20260524-sub2api-warehouse"></script>
   <script src="/js/cpa-warehouse.js?v=20260524-cpa-compatible"></script>
 </body>
 </html>

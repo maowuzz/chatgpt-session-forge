@@ -17,8 +17,10 @@
 - 自动识别账号停用 / 删除类错误
 - CPA 导出：一个账号一个 JSON 文件
 - sub2api 导出：生成包含 `accounts` 数组的聚合 JSON
+- sub2api 上传：将已登录成功的账号直接导入运行中的 sub2api
 - Cockpit 导出：生成 `cockpit-tools` 可直接导入的扁平 Codex token JSON 数组
 - CPA 仓管：扫描 CLIProxyAPI 401 凭证，自动重登获取新 CPA，封号时删除旧凭证
+- sub2api 401 自动修复：扫描 OpenAI 账号 401 状态，自动重登并覆盖导入，封号时删除旧账号
 - 支持粘贴原始 `https://chatgpt.com/api/auth/session` JSON 并转换
 - 支持通过环境变量或 Windows 系统代理配置后端出站代理
 
@@ -115,6 +117,7 @@ HTTPS_PROXY=http://127.0.0.1:7897 npm start
    - `CPA`：每个账号导出为一个 JSON 文件
    - `sub2api`：导出为一个聚合 JSON 文件
    - `Cockpit`：导出为一个 JSON 数组文件，可导入 [jlcodes99/cockpit-tools](https://github.com/jlcodes99/cockpit-tools)
+   - `上传选中`：直接上传已登录成功的账号到运行中的 sub2api 或 CPA
 
 ## CPA 导出格式
 
@@ -154,6 +157,24 @@ sub2api 导出为聚合结构：
 ```
 
 每个账号会包含 OAuth 凭证、账号 ID、用户 ID、套餐类型、过期时间和额外元数据。
+
+## sub2api 在线上传
+
+“自动登录”页可将已登录成功的 ChatGPT session 直接上传到运行中的 sub2api。选择状态为“成功”的账号后点击“上传选中”，填写：
+
+- sub2api 地址
+- sub2api 登录邮箱和密码
+- 目标 OpenAI 分组名称，默认 `codex`
+- 可选代理名称 / ID
+- 可选账号优先级
+
+上传接口使用 sub2api 的 codex-session 导入能力：
+
+```text
+POST /api/v1/admin/accounts/import/codex-session
+```
+
+上传时会设置 `update_existing: true`，因此同名 / 同账号会按 sub2api 的导入逻辑更新已有记录。
 
 ## Cockpit 导出格式
 
@@ -202,6 +223,30 @@ Cockpit 导出采用 `cockpit-tools` 当前导入逻辑支持的扁平 Codex tok
 - 管理密钥，对应 CLIProxyAPI 管理 API 的 `Authorization: Bearer <key>`
 
 本功能只会自动处理 `status/status_message` 中包含 `401` 或 `unauthorized` 的凭证。其他异常会跳过或记录失败，避免误删。
+
+## sub2api 401 自动修复
+
+“CPA 仓管”页也提供 sub2api 401 自动修复。处理流程：
+
+```text
+扫描 sub2api OpenAI 账号
+→ 发现 401 / unauthorized / token invalidated 账号
+→ 用本地匹配账号重新登录 ChatGPT
+→ 登录成功：通过 codex-session 导入接口覆盖更新 sub2api
+→ 登录失败且账号已停用：删除 sub2api 中的旧账号
+```
+
+需要填写：
+
+- sub2api 地址
+- sub2api 登录邮箱和密码
+- 目标 OpenAI 分组名称，默认 `codex`
+- 可选默认代理名称 / ID
+- 单次处理上限
+
+本功能支持常见别名匹配，包括普通 `+tag` 别名、Gmail 点号 / `+tag` 别名、2925 邮箱前缀别名。对于同一个主邮箱下的多个别名，取验证码时会优先按目标收件人邮箱匹配，避免不同别名之间误用验证码。
+
+自动修复开关只在当前页面会话中生效。页面刷新后不会自动恢复开启状态，且不会保存 sub2api 登录密码。
 
 ## 外部邮箱 Provider
 

@@ -14,8 +14,10 @@ It can import Outlook accounts, fetch OpenAI verification codes through IMAP or 
 - Account status tracking, including deactivated account detection
 - CPA export as one JSON file per account
 - sub2api export in grouped JSON format
+- sub2api direct upload for successful ChatGPT sessions
 - Cockpit export as a flat Codex token JSON array accepted by `cockpit-tools`
 - CPA warehouse: scan CLIProxyAPI 401 credentials, relogin for fresh CPA JSON, and delete deactivated accounts
+- sub2api 401 auto repair: scan OpenAI 401 accounts, relogin, re-import refreshed sessions, and delete deactivated accounts
 - Session converter for raw `https://chatgpt.com/api/auth/session` JSON
 - Optional outbound proxy support through environment variables or Windows proxy auto-detection
 
@@ -114,6 +116,7 @@ Use `direct` or `none` in `config.js` to disable proxy handling.
    - `CPA`: one JSON file per account
    - `sub2api`: grouped JSON with an `accounts` array
    - `Cockpit`: one JSON array file importable by [jlcodes99/cockpit-tools](https://github.com/jlcodes99/cockpit-tools)
+   - Upload selected sessions directly to a running sub2api or CPA instance
 
 ## CPA Export
 
@@ -153,6 +156,24 @@ sub2api export creates a grouped file:
 ```
 
 Each account includes OAuth credentials, account ID, user ID, plan type, expiry, and metadata.
+
+## sub2api Direct Upload
+
+The auto-login tab can upload successful ChatGPT sessions directly to a running sub2api instance. Select successful accounts, click the upload button, then provide:
+
+- sub2api base URL
+- sub2api login email and password
+- target OpenAI group name, default `codex`
+- optional proxy name / ID
+- optional account priority
+
+The upload uses sub2api's codex-session import endpoint:
+
+```text
+POST /api/v1/admin/accounts/import/codex-session
+```
+
+The payload sets `update_existing: true`, so existing records are updated according to sub2api's import behavior.
 
 ## Cockpit Export
 
@@ -201,6 +222,30 @@ Required inputs:
 - management key, sent as `Authorization: Bearer <key>`
 
 Only credentials whose `status/status_message` contains `401` or `unauthorized` are processed automatically. Other failures are skipped or reported to avoid accidental deletion.
+
+## sub2api 401 Auto Repair
+
+The CPA warehouse tab also includes a sub2api 401 repair panel. Flow:
+
+```text
+scan sub2api OpenAI accounts
+→ find 401 / unauthorized / token invalidated accounts
+→ relogin the matching local account
+→ success: re-import the refreshed session through codex-session import
+→ deactivated account: delete the old sub2api account
+```
+
+Required inputs:
+
+- sub2api base URL
+- sub2api login email and password
+- target OpenAI group name, default `codex`
+- optional default proxy name / ID
+- per-run processing limit
+
+Alias matching supports common `+tag` aliases, Gmail dot / `+tag` aliases, and 2925 prefix aliases. When multiple aliases share one mailbox, verification-code extraction prefers the target recipient address to avoid using another alias's code.
+
+The auto-repair toggle only applies to the current page session. It is not restored after refresh, and the sub2api password is not saved.
 
 ## External Mail Providers
 
