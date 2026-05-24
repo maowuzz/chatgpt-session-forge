@@ -78,6 +78,15 @@ class CookieJar {
   }
 }
 
+function normalizeOpenAiPassword(value) {
+  const password = String(value ?? '').trim();
+  if (!password) return '';
+  if (/^(x|xx|xxx|-|--|---|null|none|no|false|placeholder|占位|无|没有|空)$/i.test(password)) {
+    return '';
+  }
+  return password;
+}
+
 class ChatGPTProtocolLogin {
   constructor() {
     this.running = 0;
@@ -106,7 +115,9 @@ class ChatGPTProtocolLogin {
    */
   async login(account, fetchCodeFn, onStatus = () => {}) {
     const jar = new CookieJar();
-    const { email, password } = account;
+    const email = account.email;
+    const password = normalizeOpenAiPassword(account.password);
+    const loginAccount = { ...account, password };
 
     try {
       // ====== Step 1: 获取 CSRF Token ======
@@ -135,7 +146,7 @@ class ChatGPTProtocolLogin {
         callbackUrl = await this._completeModernLogin(
           jar,
           loginState,
-          account,
+          loginAccount,
           firstStep,
           fetchCodeFn,
           onStatus,
@@ -157,7 +168,7 @@ class ChatGPTProtocolLogin {
           callbackUrl = await this._submitPassword(jar, loginState, password);
         } else {
           onStatus('waiting_code', '等待验证码邮件...');
-          const code = await this._waitForCode(account, fetchCodeFn, onStatus);
+          const code = await this._waitForCode(loginAccount, fetchCodeFn, onStatus);
           if (!code) throw new Error('未能获取验证码，请检查邮箱配置');
 
           onStatus('verify_code', `提交验证码: ${code}`);
@@ -383,14 +394,23 @@ class ChatGPTProtocolLogin {
     let continueUrl = this._normalizeAuthUrl(this._extractContinueUrl(currentStep));
     let pageType = this._extractPageType(currentStep);
     let mode = this._extractEmailVerificationMode(currentStep);
+    const needsPassword = pageType === 'login_password' || continueUrl.includes('/log-in/password');
 
-    if ((pageType === 'login_password' || continueUrl.includes('/log-in/password')) && account.password) {
+    if (needsPassword && account.password) {
       onStatus('password', '提交密码...');
       loginState.sentinelToken = await this._getSentinelToken(loginState, 'username_password_login');
       currentStep = await this._submitModernPassword(jar, loginState, account.password);
       continueUrl = this._normalizeAuthUrl(this._extractContinueUrl(currentStep));
       pageType = this._extractPageType(currentStep);
       mode = this._extractEmailVerificationMode(currentStep) || mode;
+    } else if (needsPassword) {
+      onStatus('send_code', '请求邮箱验证码...');
+      const requestedAt = Date.now() - 10000;
+      loginState.sentinelToken = await this._getSentinelToken(loginState, 'email_verification');
+      await this._kickoffModernOtp(jar, loginState, mode);
+      continueUrl = '';
+      pageType = 'email_otp_verification';
+      otpIssuedAfter = Math.max(Number(otpIssuedAfter) || 0, requestedAt);
     }
 
     if (continueUrl && !this._needsModernOtp(pageType, continueUrl)) {
@@ -779,13 +799,18 @@ class ChatGPTProtocolLogin {
   async _waitForCode(account, fetchCodeFn, onStatus, issuedAfter = 0) {
     const maxRetries = config.chatgpt.codeCheckMaxRetries;
     const interval = config.chatgpt.codeCheckInterval;
+    const targetEmail = this._normalizeEmail(account?.loginEmail || account?.chatgptEmail || account?.email);
+    const requireRecipientMatch = Boolean(account?.requireTargetEmailMatch);
 
     for (let i = 0; i < maxRetries; i++) {
       onStatus('checking_code', `检查验证码 (${i + 1}/${maxRetries})...`);
       try {
         const emails = await fetchCodeFn(account);
         if (emails && emails.length > 0) {
-          const code = this._extractCodeFromEmails(emails, issuedAfter);
+          const code = this._extractCodeFromEmails(emails, issuedAfter, {
+            targetEmail,
+            requireRecipientMatch,
+          });
           if (code) return code;
         }
       } catch (err) {
@@ -797,15 +822,21 @@ class ChatGPTProtocolLogin {
   }
 
   /** 从邮件中提取 6 位验证码 */
-  _extractCodeFromEmails(emails, issuedAfter = 0) {
+  _extractCodeFromEmails(emails, issuedAfter = 0, options = {}) {
     const cutoff = issuedAfter ? issuedAfter - 60000 : 0;
+    const normalizedTargetEmail = this._normalizeEmail(
+      typeof options === 'string' ? options : options.targetEmail
+    );
+    const requireRecipientMatch = typeof options === 'object' && Boolean(options.requireRecipientMatch);
     const candidates = cutoff
       ? emails.filter(email => {
           const ts = new Date(email.date || email.receivedDateTime || 0).getTime();
           return !Number.isFinite(ts) || ts >= cutoff;
         })
       : emails;
-    const sorted = [...candidates].sort((a, b) => new Date(b.date || b.receivedDateTime) - new Date(a.date || a.receivedDateTime));
+    const sorted = [...candidates]
+      .filter(email => !normalizedTargetEmail || this._emailMatchesTarget(email, normalizedTargetEmail, requireRecipientMatch))
+      .sort((a, b) => new Date(b.date || b.receivedDateTime) - new Date(a.date || a.receivedDateTime));
 
     // 优先 OpenAI 相关邮件
     for (const email of sorted) {
@@ -829,6 +860,44 @@ class ChatGPTProtocolLogin {
       if (match) return match[1];
     }
     return null;
+  }
+
+  _emailMatchesTarget(email = {}, targetEmail = '', requireRecipientMatch = false) {
+    const target = this._normalizeEmail(targetEmail);
+    if (!target) return true;
+    const recipients = this._extractRecipientEmails(email);
+    if (recipients.length === 0) return !requireRecipientMatch;
+    return recipients.includes(target);
+  }
+
+  _extractRecipientEmails(email = {}) {
+    const values = [
+      email.recipient,
+      email.toEmail,
+      email.to_email,
+      email.deliveredTo,
+      email.delivered_to,
+      email.xOriginalTo,
+      email.x_original_to,
+      ...(Array.isArray(email.recipients) ? email.recipients : []),
+      ...(Array.isArray(email.to) ? email.to : [email.to]),
+      ...(Array.isArray(email.cc) ? email.cc : [email.cc]),
+      ...(Array.isArray(email.bcc) ? email.bcc : [email.bcc]),
+    ];
+    return Array.from(new Set(values.flatMap(value => this._extractEmailsFromValue(value))));
+  }
+
+  _extractEmailsFromValue(value) {
+    if (!value) return [];
+    if (typeof value === 'object') {
+      return this._extractEmailsFromValue(value.address || value.email || value.name || '');
+    }
+    const matches = String(value).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+    return matches.map(item => this._normalizeEmail(item)).filter(Boolean);
+  }
+
+  _normalizeEmail(value = '') {
+    return String(value || '').trim().toLowerCase();
   }
 
   // 兼容旧接口

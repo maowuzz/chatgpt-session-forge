@@ -155,6 +155,12 @@ function handleSSEEvent(data) {
     case 'warehouse_complete':
       if (typeof onWarehouseEvent === 'function') onWarehouseEvent(data);
       break;
+    case 'sub2api_warehouse_start':
+    case 'sub2api_warehouse_status':
+    case 'sub2api_warehouse_item':
+    case 'sub2api_warehouse_complete':
+      if (typeof onSub2apiWarehouseEvent === 'function') onSub2apiWarehouseEvent(data);
+      break;
   }
 }
 

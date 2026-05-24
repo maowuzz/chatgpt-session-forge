@@ -165,6 +165,14 @@ async function fetchMessageSummaries(client, uids) {
       subject: msg.envelope?.subject || '(无主题)',
       from: firstAddress(msg.envelope?.from)?.address || '',
       fromName: firstAddress(msg.envelope?.from)?.name || '',
+      to: addressList(msg.envelope?.to),
+      cc: addressList(msg.envelope?.cc),
+      bcc: addressList(msg.envelope?.bcc),
+      recipients: [
+        ...addressList(msg.envelope?.to),
+        ...addressList(msg.envelope?.cc),
+        ...addressList(msg.envelope?.bcc),
+      ],
       date: (msg.envelope?.date || msg.internalDate || new Date()).toISOString(),
       bodyText: '',
       bodyPreview: '',
@@ -206,6 +214,13 @@ async function hydrateMessageBodies(client, messages) {
 
 function firstAddress(addresses = []) {
   return Array.isArray(addresses) && addresses.length > 0 ? addresses[0] : null;
+}
+
+function addressList(addresses = []) {
+  if (!Array.isArray(addresses)) return [];
+  return addresses
+    .map(address => String(address?.address || '').trim().toLowerCase())
+    .filter(Boolean);
 }
 
 function findPreferredBodyPart(structure) {

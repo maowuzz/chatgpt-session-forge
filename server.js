@@ -143,6 +143,7 @@ app.use('/api', require('./routes/mail'));
 app.use('/api', require('./routes/chatgpt'));
 app.use('/api', require('./routes/convert'));
 app.use('/api', require('./routes/warehouse'));
+app.use('/api', require('./routes/upload'));
 
 // ==================== 错误处理 ====================
 app.use((err, req, res, next) => {

@@ -68,7 +68,7 @@ async function fetchEmails(account, options = {}) {
   const params = new URLSearchParams({
     $top: String(limit),
     $orderby: 'receivedDateTime desc',
-    $select: 'id,subject,from,receivedDateTime,bodyPreview,body,internetMessageId',
+    $select: 'id,subject,from,toRecipients,ccRecipients,bccRecipients,receivedDateTime,bodyPreview,body,internetMessageId',
   });
 
   // 关键词搜索
@@ -105,6 +105,14 @@ async function fetchEmails(account, options = {}) {
     subject: msg.subject || '(无主题)',
     from: msg.from?.emailAddress?.address || '',
     fromName: msg.from?.emailAddress?.name || '',
+    to: graphRecipientList(msg.toRecipients),
+    cc: graphRecipientList(msg.ccRecipients),
+    bcc: graphRecipientList(msg.bccRecipients),
+    recipients: [
+      ...graphRecipientList(msg.toRecipients),
+      ...graphRecipientList(msg.ccRecipients),
+      ...graphRecipientList(msg.bccRecipients),
+    ],
     date: msg.receivedDateTime || new Date().toISOString(),
     bodyText: stripHtml(msg.body?.content || ''),
     bodyPreview: msg.bodyPreview || '',
@@ -127,6 +135,13 @@ async function fetchEmails(account, options = {}) {
     count: filtered.length,
     protocol: 'graph',
   };
+}
+
+function graphRecipientList(recipients = []) {
+  if (!Array.isArray(recipients)) return [];
+  return recipients
+    .map(recipient => String(recipient?.emailAddress?.address || '').trim().toLowerCase())
+    .filter(Boolean);
 }
 
 /**
