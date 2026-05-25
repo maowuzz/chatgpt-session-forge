@@ -57,9 +57,11 @@ function normalizeLoginError(error) {
 
 async function fetchVerificationCode(account) {
   const options = {
-    keyword: 'OpenAI',
+    recentOnly: true,
+    fullBody: true,
+    stopOnCode: true,
     sender: '',
-    limit: 5,
+    limit: 25,
   };
 
   const provider = externalMailService.getAccountMailProvider(account);
@@ -71,18 +73,51 @@ async function fetchVerificationCode(account) {
     return result.emails || [];
   }
 
-  const results = await Promise.all([
-    imapService.fetchEmails(account, options).catch(err => {
-      console.error(`[CPA 仓管 IMAP 取码失败] ${account.email}:`, err.message);
-      return { success: false, emails: [] };
-    }),
-    graphService.fetchEmails(account, options).catch(err => {
-      console.error(`[CPA 仓管 Graph 取码失败] ${account.email}:`, err.message);
-      return { success: false, emails: [] };
-    }),
-  ]);
+  const allEmails = [];
+  const errors = [];
+  const tasks = [
+    startMailFetch('graph', graphService.fetchEmails, account, options),
+    startMailFetch('imap', imapService.fetchEmails, account, options),
+  ];
+  const pending = new Set(tasks);
 
-  return results.flatMap(result => result.emails || []);
+  while (pending.size > 0) {
+    const settled = await Promise.race([...pending].map(task =>
+      task.promise.then(value => ({ task, value }))
+    ));
+    pending.delete(settled.task);
+
+    const codeEmails = collectMailFetchResult(settled.value, allEmails, errors);
+    if (codeEmails) return codeEmails;
+  }
+
+  if (allEmails.length === 0 && errors.length > 0) {
+    console.error(`[CPA warehouse code fetch failed] ${account.email}: ${errors.join(' | ')}`);
+  }
+
+  return allEmails;
+}
+
+function startMailFetch(protocol, fetcher, account, options) {
+  return {
+    protocol,
+    promise: fetcher(account, options)
+      .then(result => ({ success: true, protocol, result }))
+      .catch(error => ({ success: false, protocol, error })),
+  };
+}
+
+function collectMailFetchResult(result, allEmails, errors) {
+  if (result.success) {
+    const emails = result.result?.emails || [];
+    if (emails.length > 0) {
+      allEmails.push(...emails);
+      if (chatgptService.extractCodeFromEmails(emails)) return emails;
+    }
+  } else {
+    errors.push(`${result.protocol}: ${result.error?.message || String(result.error)}`);
+  }
+  return null;
 }
 
 function normalizeManagementBaseUrl(baseUrl = DEFAULT_CPA_BASE_URL) {

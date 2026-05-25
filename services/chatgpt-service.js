@@ -813,10 +813,12 @@ class ChatGPTProtocolLogin {
       const subjectStr = (email.subject || '').toLowerCase();
       if (
         fromStr.includes('openai') || fromStr.includes('chatgpt') || fromStr.includes('noreply') ||
+        fromStr.includes('tm.openai.com') || fromStr.includes('mail.openai.com') ||
         subjectStr.includes('verification') || subjectStr.includes('verify') ||
-        subjectStr.includes('code') || subjectStr.includes('login') || subjectStr.includes('otp')
+        subjectStr.includes('code') || subjectStr.includes('login') || subjectStr.includes('otp') ||
+        subjectStr.includes('chatgpt') || subjectStr.includes('openai')
       ) {
-        const content = `${email.subject || ''} ${email.bodyText || ''} ${email.bodyPreview || ''}`;
+        const content = this._verificationContent(email);
         const match = content.match(/\b(\d{6})\b/);
         if (match) return match[1];
       }
@@ -824,11 +826,22 @@ class ChatGPTProtocolLogin {
 
     // 回退
     for (const email of sorted) {
-      const content = `${email.subject || ''} ${email.bodyText || ''} ${email.bodyPreview || ''}`;
+      const content = this._verificationContent(email);
       const match = content.match(/\b(\d{6})\b/);
       if (match) return match[1];
     }
     return null;
+  }
+
+  _verificationContent(email) {
+    return [
+      email.subject,
+      email.bodyText,
+      email.bodyPreview,
+      email.bodyHtml,
+      email.text,
+      email.html,
+    ].filter(Boolean).join(' ');
   }
 
   // 兼容旧接口

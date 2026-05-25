@@ -1,43 +1,50 @@
-/**
- * Outlook IMAP OAuth2 邮件获取服务
- *
- * 目标是稳定取验证码邮件：
- * 1. OAuth scope 多路兜底，适配不同来源的 refresh token
- * 2. IMAP 只取最近邮件，再在本地做关键词/发件人过滤，避开 Outlook SEARCH 兼容性问题
- * 3. 正文优先取 text/plain / html part，取不到时回退到 message source 片段
- */
-
 const { ImapFlow } = require('imapflow');
 const config = require('../config');
 
-const DEFAULT_LIMIT = 10;
-const SEARCH_WINDOW_MIN = 20;
-const SEARCH_WINDOW_MAX = 80;
-const BODY_PREVIEW_BYTES = 16384;
+const IMAP_TOKEN_SCOPES = [
+  'https://outlook.office.com/.default offline_access',
+  'https://outlook.office.com/IMAP.AccessAsUser.All offline_access',
+  'https://outlook.office365.com/.default offline_access',
+  'https://outlook.office365.com/IMAP.AccessAsUser.All offline_access',
+  'https://outlook.office.com/IMAP.AccessAsUser.All',
+  'openid offline_access https://outlook.office.com/IMAP.AccessAsUser.All',
+];
+const ACCESS_TOKEN_SKEW_MS = 60 * 1000;
+const IMAP_IDLE_CLOSE_MS = 30 * 1000;
+const accessTokenCache = new Map();
+const imapClientPool = new Map();
 
-/**
- * 刷新 OAuth2 access token
- */
 async function refreshAccessToken(clientId, refreshToken) {
-  const scopes = [
-    'https://outlook.office365.com/IMAP.AccessAsUser.All offline_access',
-    'https://outlook.office.com/IMAP.AccessAsUser.All offline_access',
-    'https://outlook.office365.com/.default offline_access',
-    'https://graph.microsoft.com/.default offline_access',
-  ];
-
-  let lastError = null;
-  for (const scope of scopes) {
-    try {
-      return await _requestToken(clientId, refreshToken, scope);
-    } catch (err) {
-      lastError = err;
-    }
-  }
-  throw lastError;
+  const token = await refreshAccessTokenForScope(clientId, refreshToken, IMAP_TOKEN_SCOPES[0]);
+  return token.accessToken;
 }
 
-async function _requestToken(clientId, refreshToken, scope) {
+async function* getAccessTokenCandidates(clientId, refreshToken) {
+  const errors = [];
+  let yielded = false;
+
+  for (const scope of IMAP_TOKEN_SCOPES) {
+    try {
+      const token = await refreshAccessTokenForScope(clientId, refreshToken, scope);
+      yielded = true;
+      yield token;
+    } catch (err) {
+      errors.push(`${scope}: ${err.message}`);
+    }
+  }
+
+  if (!yielded) {
+    throw new Error(`IMAP token refresh failed:\n${errors.join('\n')}`);
+  }
+}
+
+async function refreshAccessTokenForScope(clientId, refreshToken, scope) {
+  const key = tokenCacheKey(clientId, refreshToken, scope);
+  const cached = accessTokenCache.get(key);
+  if (cached && cached.expiresAt - Date.now() > ACCESS_TOKEN_SKEW_MS) {
+    return cached;
+  }
+
   const params = new URLSearchParams({
     client_id: clientId,
     grant_type: 'refresh_token',
@@ -53,26 +60,139 @@ async function _requestToken(clientId, refreshToken, scope) {
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.error) {
-    const msg = data.error_description || data.error || `HTTP ${response.status}`;
-    throw new Error(`IMAP Token 错误: ${msg}`);
+    throw new Error(data.error_description || data.error || `HTTP ${response.status}`);
   }
 
-  if (!data.access_token) {
-    throw new Error('IMAP Token 错误: 响应缺少 access_token');
-  }
-
-  return data.access_token;
+  const token = {
+    accessToken: data.access_token,
+    scope,
+    cacheKey: key,
+    expiresAt: Date.now() + Math.max(60, Number(data.expires_in) || 3600) * 1000,
+  };
+  accessTokenCache.set(key, token);
+  return token;
 }
 
-/**
- * 通过 IMAP 获取邮件
- */
 async function fetchEmails(account, options = {}) {
   const { email, clientId, refreshToken } = account;
-  const keyword = String(options.keyword || '').trim();
-  const sender = String(options.sender || '').trim();
-  const limit = normalizeLimit(options.limit);
-  const accessToken = await refreshAccessToken(clientId, refreshToken);
+  const {
+    keyword = '',
+    sender = '',
+    limit = 10,
+    recentOnly = false,
+    fullBody = false,
+    stopOnCode = false,
+  } = options;
+  const accessErrors = [];
+
+  for await (const token of getAccessTokenCandidates(clientId, refreshToken)) {
+    try {
+      return await fetchEmailsWithToken(email, token, {
+        keyword,
+        sender,
+        limit,
+        recentOnly,
+        fullBody,
+        stopOnCode,
+      });
+    } catch (err) {
+      accessErrors.push(`${token.scope}: ${err.message}`);
+      if (!isImapTokenAccessError(err)) throw err;
+      if (token.cacheKey) accessTokenCache.delete(token.cacheKey);
+    }
+  }
+
+  throw new Error(`IMAP access failed for all token scopes:\n${accessErrors.join('\n')}`);
+}
+
+async function fetchEmailsWithToken(email, token, options = {}) {
+  const {
+    keyword = '',
+    sender = '',
+    limit = 10,
+    recentOnly = false,
+    fullBody = false,
+    stopOnCode = false,
+  } = options;
+  let clientRef = null;
+
+  try {
+    clientRef = await getImapClient(email, token);
+    const client = clientRef.client;
+    const mailbox = await client.getMailboxLock('INBOX', { readOnly: true });
+
+    try {
+      const searchCriteria = recentOnly ? { all: true } : buildSearchCriteria(keyword, sender);
+      let uids;
+      try {
+        uids = await client.search(searchCriteria, { uid: true });
+      } catch {
+        uids = await client.search({ all: true }, { uid: true });
+      }
+
+      if (!uids || uids.length === 0) {
+        return { success: true, emails: [], count: 0, protocol: 'imap' };
+      }
+
+      uids.sort((a, b) => b - a);
+      const targetUids = uids.slice(0, limit);
+      const uidRange = targetUids.join(',');
+      const shouldFetchSource = recentOnly || fullBody || stopOnCode;
+      const sourceMaxLength = stopOnCode ? 128 * 1024 : shouldFetchSource ? 256 * 1024 : 64 * 1024;
+      const fetchSets = stopOnCode ? targetUids.map(uid => String(uid)) : [uidRange];
+      const fetchQuery = {
+        uid: true,
+        envelope: true,
+      };
+      if (shouldFetchSource) fetchQuery.source = { maxLength: sourceMaxLength };
+      const messages = [];
+
+      for (const fetchSet of fetchSets) {
+        for await (const msg of client.fetch(fetchSet, fetchQuery, { uid: true })) {
+          const parsed = parseRawMessage(msg.source);
+          const message = {
+            uid: msg.uid,
+            messageId: msg.envelope?.messageId || `imap-${msg.uid}`,
+            subject: msg.envelope?.subject || parsed.subject || '',
+            from: msg.envelope?.from?.[0]?.address || parsed.from || '',
+            fromName: msg.envelope?.from?.[0]?.name || parsed.fromName || '',
+            date: msg.envelope?.date?.toISOString() || parsed.date || new Date().toISOString(),
+            receivedDateTime: msg.envelope?.date?.toISOString() || parsed.date || '',
+            bodyText: parsed.bodyText,
+            bodyPreview: parsed.bodyPreview,
+            bodyHtml: parsed.bodyHtml,
+            protocol: 'imap',
+          };
+          messages.push(message);
+          if (stopOnCode && hasVerificationCode(message)) {
+            return buildFetchResult(messages, token);
+          }
+        }
+      }
+
+      messages.sort((a, b) => new Date(b.date) - new Date(a.date));
+      return buildFetchResult(messages, token);
+    } finally {
+      mailbox.release();
+    }
+  } catch (err) {
+    if (clientRef) closeImapClient(clientRef.key);
+    throw err;
+  } finally {
+    if (clientRef) releaseImapClient(clientRef.key);
+  }
+}
+
+async function getImapClient(email, token) {
+  const key = imapClientKey(email, token);
+  const existing = imapClientPool.get(key);
+  if (existing?.client && !existing.client.isClosed && existing.client.usable) {
+    if (existing.closeTimer) clearTimeout(existing.closeTimer);
+    existing.closeTimer = null;
+    return { key, client: existing.client };
+  }
+
+  if (existing?.client) closeImapClient(key);
 
   const client = new ImapFlow({
     host: config.imap.host,
@@ -80,7 +200,7 @@ async function fetchEmails(account, options = {}) {
     secure: config.imap.secure,
     auth: {
       user: email,
-      accessToken,
+      accessToken: token.accessToken,
       loginMethod: 'AUTH=XOAUTH2',
     },
     clientInfo: {
@@ -92,240 +212,237 @@ async function fetchEmails(account, options = {}) {
     disableAutoEnable: true,
     disableCompression: true,
     logger: false,
-    connectionTimeout: config.imap.timeout || 30000,
-    greetingTimeout: 15000,
-    socketTimeout: config.imap.timeout || 30000,
+    greetingTimeout: 8000,
+    socketTimeout: 12000,
   });
-
+  const entry = { client, closeTimer: null };
+  imapClientPool.set(key, entry);
+  client.on('error', () => {});
+  client.on('close', () => {
+    if (imapClientPool.get(key)?.client === client) imapClientPool.delete(key);
+  });
   try {
     await client.connect();
-    const mailbox = await client.getMailboxLock('INBOX');
-
-    try {
-      const uids = await resolveRecentUids(client, limit, Boolean(keyword || sender));
-      if (uids.length === 0) {
-        return { success: true, emails: [], count: 0, protocol: 'imap' };
-      }
-
-      const messages = await fetchMessageSummaries(client, uids);
-      await hydrateMessageBodies(client, messages);
-
-      const filtered = messages
-        .filter(message => matchesFilters(message, keyword, sender))
-        .sort((a, b) => new Date(b.date) - new Date(a.date))
-        .slice(0, limit)
-        .map(message => {
-          const { uid, bodyPart, ...safeMessage } = message;
-          return safeMessage;
-        });
-
-      return { success: true, emails: filtered, count: filtered.length, protocol: 'imap' };
-    } finally {
-      mailbox.release();
-    }
   } catch (err) {
-    throw new Error(normalizeImapError(err));
-  } finally {
-    await client.logout().catch(() => {});
+    closeImapClient(key);
+    throw err;
+  }
+  return { key, client };
+}
+
+function releaseImapClient(key) {
+  const entry = imapClientPool.get(key);
+  if (!entry?.client || entry.client.isClosed) return;
+  if (entry.closeTimer) clearTimeout(entry.closeTimer);
+  entry.closeTimer = setTimeout(() => closeImapClient(key), IMAP_IDLE_CLOSE_MS);
+}
+
+function closeImapClient(key) {
+  const entry = imapClientPool.get(key);
+  if (!entry) return;
+  if (entry.closeTimer) clearTimeout(entry.closeTimer);
+  imapClientPool.delete(key);
+  try {
+    entry.client.close();
+  } catch {
+    // ignore close errors
   }
 }
 
-function normalizeLimit(value) {
-  return Math.max(1, Math.min(50, Number(value) || DEFAULT_LIMIT));
+function imapClientKey(email, token) {
+  return `${String(email || '').toLowerCase()}:${token.scope}:${token.cacheKey || token.accessToken}`;
 }
 
-async function resolveRecentUids(client, limit, hasFilters) {
-  const wanted = Math.max(limit, hasFilters ? Math.min(SEARCH_WINDOW_MAX, limit * 4) : limit);
-  const exists = Number(client.mailbox?.exists || 0);
-  if (exists <= 0) return [];
-
-  const sequenceStart = Math.max(1, exists - Math.max(wanted, SEARCH_WINDOW_MIN) + 1);
-  const sequenceRange = `${sequenceStart}:*`;
-  const uids = [];
-
-  for await (const msg of client.fetch(sequenceRange, { uid: true, internalDate: true })) {
-    if (msg.uid) uids.push(msg.uid);
-  }
-
-  return uids.sort((a, b) => b - a).slice(0, Math.max(wanted, limit));
+function buildFetchResult(messages, token) {
+  messages.forEach(m => delete m.uid);
+  return {
+    success: true,
+    emails: messages,
+    count: messages.length,
+    protocol: 'imap',
+    tokenScope: token.scope,
+  };
 }
 
-async function fetchMessageSummaries(client, uids) {
-  const messages = [];
-  for await (const msg of client.fetch(uids, {
-    uid: true,
-    envelope: true,
-    bodyStructure: true,
-    internalDate: true,
-    source: { start: 0, maxLength: 256 },
-  }, { uid: true })) {
-    messages.push({
-      uid: msg.uid,
-      messageId: msg.envelope?.messageId || `imap-${msg.uid}`,
-      subject: msg.envelope?.subject || '(无主题)',
-      from: firstAddress(msg.envelope?.from)?.address || '',
-      fromName: firstAddress(msg.envelope?.from)?.name || '',
-      date: (msg.envelope?.date || msg.internalDate || new Date()).toISOString(),
-      bodyText: '',
-      bodyPreview: '',
-      bodyHtml: '',
-      bodyPart: findPreferredBodyPart(msg.bodyStructure),
-      protocol: 'imap',
-    });
-  }
-
-  return messages;
-}
-
-async function hydrateMessageBodies(client, messages) {
-  for (const message of messages) {
-    try {
-      if (message.bodyPart?.part) {
-        const query = {
-          uid: true,
-          bodyParts: [{ key: message.bodyPart.part, start: 0, maxLength: BODY_PREVIEW_BYTES }],
-        };
-        const fetched = await client.fetchOne(message.uid, query, { uid: true });
-        const part = fetched?.bodyParts?.get(message.bodyPart.part);
-        if (part) {
-          applyBodyContent(message, part, message.bodyPart);
-          continue;
-        }
-      }
-
-      const fallback = await client.fetchOne(message.uid, {
-        uid: true,
-        source: { start: 0, maxLength: BODY_PREVIEW_BYTES },
-      }, { uid: true });
-      if (fallback?.source) applyBodyContent(message, fallback.source, { type: 'text/plain' });
-    } catch {
-      // 信封信息足够判断是否有邮件；正文读取失败不让整个账号失败。
-    }
-  }
-}
-
-function firstAddress(addresses = []) {
-  return Array.isArray(addresses) && addresses.length > 0 ? addresses[0] : null;
-}
-
-function findPreferredBodyPart(structure) {
-  const parts = [];
-  walkBodyStructure(structure, parts);
-
+function isImapTokenAccessError(err) {
+  const message = String(err?.message || err || '').toLowerCase();
   return (
-    parts.find(part => part.type === 'text/plain' && !isAttachment(part)) ||
-    parts.find(part => part.type === 'text/html' && !isAttachment(part)) ||
-    parts.find(part => part.type.startsWith('text/') && !isAttachment(part)) ||
-    null
+    message.includes('authenticate') ||
+    message.includes('authentication') ||
+    message.includes('authfail') ||
+    message.includes('invalid credentials')
   );
 }
 
-function walkBodyStructure(node, parts) {
-  if (!node) return;
-  if (Array.isArray(node.childNodes)) {
-    node.childNodes.forEach(child => walkBodyStructure(child, parts));
-    return;
+function buildSearchCriteria(keyword, sender) {
+  if (keyword && sender) {
+    return {
+      and: [
+        { or: [{ subject: keyword }, { body: keyword }] },
+        { from: sender },
+      ],
+    };
   }
-
-  const type = String(node.type || '').toLowerCase();
-  if (node.part && type.startsWith('text/')) {
-    parts.push({
-      part: node.part,
-      type,
-      encoding: String(node.encoding || '').toLowerCase(),
-      charset: String(node.parameters?.charset || '').toLowerCase(),
-      disposition: String(node.disposition || '').toLowerCase(),
-    });
-  }
+  if (keyword) return { or: [{ subject: keyword }, { body: keyword }] };
+  if (sender) return { from: sender };
+  return { all: true };
 }
 
-function isAttachment(part) {
-  return part.disposition === 'attachment';
+function hasVerificationCode(email) {
+  const marker = [
+    email.from,
+    email.fromName,
+    email.subject,
+    email.bodyPreview,
+    email.bodyText,
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (!/(openai|chatgpt|tm\.openai\.com|mail\.openai\.com|noreply)/i.test(marker)) return false;
+  return /\b\d{6}\b/.test(marker);
 }
 
-function applyBodyContent(message, buffer, part = {}) {
-  const decoded = decodeBody(buffer, part.encoding);
-  const text = part.type === 'text/html' ? stripHtml(decoded) : stripHtml(decoded);
-
-  message.bodyText = text.substring(0, 4000);
-  message.bodyPreview = text.substring(0, 240);
-  if (part.type === 'text/html') message.bodyHtml = decoded;
-}
-
-function decodeBody(buffer, encoding = '') {
-  const raw = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '');
-  const normalizedEncoding = String(encoding || '').toLowerCase();
-
-  if (normalizedEncoding === 'base64') {
-    return raw.toString('utf8').replace(/\s+/g, '').trim()
-      ? Buffer.from(raw.toString('utf8').replace(/\s+/g, ''), 'base64').toString('utf8')
-      : '';
+function parseRawMessage(source) {
+  if (!source) {
+    return { subject: '', from: '', fromName: '', date: '', bodyText: '', bodyPreview: '', bodyHtml: '' };
   }
 
-  if (normalizedEncoding === 'quoted-printable') {
-    return decodeQuotedPrintable(raw.toString('utf8'));
+  const raw = Buffer.isBuffer(source) ? source.toString('utf8') : String(source);
+  const { headers, body } = splitHeaders(raw);
+  const contentType = getHeader(headers, 'content-type');
+  const parts = parseMimeParts(body, contentType);
+
+  let bodyText = '';
+  let bodyHtml = '';
+  for (const part of parts) {
+    const type = getHeader(part.headers, 'content-type').toLowerCase();
+    const disposition = getHeader(part.headers, 'content-disposition').toLowerCase();
+    if (disposition.includes('attachment')) continue;
+
+    const decoded = decodeBody(part.body, getHeader(part.headers, 'content-transfer-encoding'));
+    if (type.includes('text/plain') && !bodyText) bodyText = decoded;
+    if (type.includes('text/html') && !bodyHtml) bodyHtml = decoded;
   }
 
-  return raw.toString('utf8');
+  if (!bodyText && !bodyHtml) {
+    bodyText = decodeBody(body, getHeader(headers, 'content-transfer-encoding'));
+  }
+  if (!bodyText && bodyHtml) bodyText = stripHtml(bodyHtml);
+  if (bodyText && /<\/?[a-z][\s\S]*>/i.test(bodyText)) {
+    if (!bodyHtml) bodyHtml = bodyText;
+    bodyText = stripHtml(bodyText);
+  }
+
+  bodyText = normalizeWhitespace(bodyText);
+  return {
+    subject: decodeMimeWords(getHeader(headers, 'subject')),
+    from: parseAddress(getHeader(headers, 'from')).address,
+    fromName: parseAddress(getHeader(headers, 'from')).name,
+    date: getHeader(headers, 'date'),
+    bodyText,
+    bodyPreview: bodyText.slice(0, 300),
+    bodyHtml,
+  };
 }
 
-function decodeQuotedPrintable(value = '') {
-  return String(value || '')
+function parseMimeParts(body, contentType) {
+  const boundary = String(contentType || '').match(/boundary="?([^";\r\n]+)"?/i)?.[1];
+  if (!boundary) return [{ headers: '', body }];
+
+  const delimiter = `--${boundary}`;
+  return body
+    .split(delimiter)
+    .filter(part => part.trim() && !part.trim().startsWith('--'))
+    .map(part => splitHeaders(part.replace(/^\r?\n/, '')));
+}
+
+function splitHeaders(raw) {
+  const match = String(raw || '').match(/\r?\n\r?\n/);
+  if (!match) return { headers: '', body: String(raw || '') };
+  const index = match.index;
+  return {
+    headers: raw.slice(0, index),
+    body: raw.slice(index + match[0].length),
+  };
+}
+
+function getHeader(headers, name) {
+  const lines = String(headers || '').split(/\r?\n/);
+  const unfolded = [];
+  for (const line of lines) {
+    if (/^\s/.test(line) && unfolded.length) {
+      unfolded[unfolded.length - 1] += ` ${line.trim()}`;
+    } else {
+      unfolded.push(line);
+    }
+  }
+  const prefix = `${name.toLowerCase()}:`;
+  const found = unfolded.find(line => line.toLowerCase().startsWith(prefix));
+  return found ? found.slice(prefix.length).trim() : '';
+}
+
+function decodeBody(value, encoding) {
+  const text = String(value || '').trim();
+  const enc = String(encoding || '').toLowerCase();
+  try {
+    if (enc.includes('base64')) {
+      return Buffer.from(text.replace(/\s+/g, ''), 'base64').toString('utf8');
+    }
+    if (enc.includes('quoted-printable')) {
+      return decodeQuotedPrintable(text);
+    }
+  } catch {
+    return text;
+  }
+  return text;
+}
+
+function decodeQuotedPrintable(value) {
+  const binary = String(value || '')
     .replace(/=\r?\n/g, '')
-    .replace(/=([0-9A-F]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    .replace(/=([0-9a-f]{2})/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  return Buffer.from(binary, 'binary').toString('utf8');
 }
 
-function stripHtml(value = '') {
-  return String(value || '')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+function decodeMimeWords(value) {
+  return String(value || '').replace(/=\?([^?]+)\?([bq])\?([^?]+)\?=/gi, (_, charset, encoding, encoded) => {
+    try {
+      if (encoding.toLowerCase() === 'b') {
+        return Buffer.from(encoded, 'base64').toString('utf8');
+      }
+      return decodeQuotedPrintable(encoded.replace(/_/g, ' '));
+    } catch {
+      return _;
+    }
+  });
+}
+
+function parseAddress(value) {
+  const text = decodeMimeWords(value);
+  const match = text.match(/^(?:"?([^"]*)"?\s)?<([^>]+)>$/);
+  if (match) return { name: match[1] || '', address: match[2].toLowerCase() };
+  const email = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '';
+  return { name: '', address: email.toLowerCase() };
+}
+
+function stripHtml(html) {
+  return String(html || '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/\s+/g, ' ')
-    .trim();
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)));
 }
 
-function matchesFilters(message, keyword, sender) {
-  const keywordText = String(keyword || '').toLowerCase();
-  const senderText = String(sender || '').toLowerCase();
-
-  if (senderText) {
-    const from = `${message.from || ''} ${message.fromName || ''}`.toLowerCase();
-    if (!from.includes(senderText)) return false;
-  }
-
-  if (keywordText) {
-    const haystack = [
-      message.subject,
-      message.from,
-      message.fromName,
-      message.bodyPreview,
-      message.bodyText,
-    ].join(' ').toLowerCase();
-    if (!haystack.includes(keywordText)) return false;
-  }
-
-  return true;
+function normalizeWhitespace(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
-function normalizeImapError(err) {
-  const message = err?.message || String(err || '未知错误');
-
-  if (/AUTHENTICATE|Authentication|Invalid credentials|NO AUTHENTICATE|LOGIN failed/i.test(message)) {
-    return `IMAP 认证失败：${message}`;
-  }
-  if (/Unsupported authentication mechanism/i.test(message)) {
-    return 'IMAP 认证失败：服务器未开放 XOAUTH2/OAUTHBEARER，请确认 Outlook IMAP 已启用且 refresh token 授权包含 IMAP.AccessAsUser.All';
-  }
-  if (/ETIMEDOUT|ESOCKET|ECONN|Greeting never received|Socket timeout|Timed out/i.test(message)) {
-    return `IMAP 连接超时：${message}`;
-  }
-
-  return message;
+function tokenCacheKey(clientId, refreshToken, scope) {
+  return `${clientId}:${scope}:${refreshToken}`;
 }
 
 module.exports = { fetchEmails, refreshAccessToken };
